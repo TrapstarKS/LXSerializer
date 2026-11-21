@@ -186,6 +186,7 @@ Fish.Options = {
     Notify = true,
     ShowStatus = true,
     ReadMe = true,
+    SizeReport = true,
     StreamToFile = true,
     StreamChunk = 4194304,
     LogToFile = true,
@@ -1000,6 +1001,52 @@ local GEOMETRY_PROPS = {
 }
 local GEOMETRY_CLASSES = toSet({"UnionOperation","IntersectOperation","NegateOperation","PartOperation","MeshPart"})
 
+local LEGACY_BINARY = { ChildData = "ChildData2", MeshData = "MeshData2", PhysicsData = "PhysicalConfigData" }
+
+local SizeStats = { props = {}, classes = {} }
+
+local function resetSizeStats()
+    SizeStats.props = {}
+    SizeStats.classes = {}
+end
+
+local function trackSize(bucket, key, n)
+    local entry = bucket[key]
+    if not entry then
+        entry = { 0, 0 }
+        bucket[key] = entry
+    end
+    entry[1] = entry[1] + n
+    entry[2] = entry[2] + 1
+end
+
+local function logSizeReport(sharedBytes)
+    local function top(bucket, limit)
+        local list = {}
+        for k, v in pairs(bucket) do list[#list + 1] = { k, v[1], v[2] } end
+        table.sort(list, function(a, b) return a[2] > b[2] end)
+        local lines = {}
+        for i = 1, math.min(limit, #list) do
+            local row = list[i]
+            lines[#lines + 1] = fmt("  %-32s %10.2f KB  (%d)", row[1], row[2] / 1024, row[3])
+        end
+        return tconcat(lines, "\n")
+    end
+    log("Size report - top properties:\n" .. top(SizeStats.props, 25))
+    log("Size report - top classes (own props only):\n" .. top(SizeStats.classes, 15))
+    log(fmt("Size report - SharedStrings block: %.2f KB (%d unique)", (sharedBytes or 0) / 1024, #sharedOrder))
+end
+
+local function isRedundantProp(name, names)
+    if name == "Rotation" and names.CFrame then return true end
+    if name == "BrickColor" and names.Color then return true end
+    if (name == "AssemblyLinearVelocity" or name == "AssemblyAngularVelocity") and names.CFrame then return true end
+    local first = name:sub(1, 1)
+    local upper = first:upper()
+    if first ~= upper and names[upper .. name:sub(2)] then return true end
+    return false
+end
+
 local emitInst
 
 local propPlans = {}
@@ -1046,14 +1093,14 @@ local function propPlan(inst, cls, opts)
     end
     add(INSTANCE_SPECIFIC[cls], true)
     add(CRITICAL_PROPS, true, true)
-    add(propsViaGetProperties(inst), false)
+    add(propsViaGetProperties(inst), true)
     local visibleLower = {}
     for _, e in ipairs(plan) do
         if not e.hidden then visibleLower[e.name:lower()] = true end
     end
     local final = {}
     for _, e in ipairs(plan) do
-        if not (e.hidden and visibleLower[e.name:lower()] and not BINARY_PROPS[e.name]) then
+        if not (e.hidden and visibleLower[e.name:lower()] and not BINARY_PROPS[e.name]) and not isRedundantProp(e.name, added) then
             final[#final + 1] = e
         end
     end
@@ -1107,6 +1154,19 @@ local function emitProps(buf, inst, cls, opts, decompileCache)
     local plan = propPlan(inst, cls, opts)
     local gh = IO.gethiddenproperty
     local aliasUris
+    local emitted = {}
+    local heldLegacy
+    local track = opts.SizeReport
+    local function put(k, str)
+        if LEGACY_BINARY[k] then
+            heldLegacy = heldLegacy or {}
+            heldLegacy[k] = str
+            return
+        end
+        emitted[k] = true
+        buf[#buf + 1] = str
+        if track then trackSize(SizeStats.props, k, #str) end
+    end
     for i = 1, #plan do
         local e = plan[i]
         if not e.dead then
@@ -1136,7 +1196,7 @@ local function emitProps(buf, inst, cls, opts, decompileCache)
                     if not same then
                         local str, unsupported = serValue(k, v, e.numType, e.vt)
                         if str then
-                            buf[#buf + 1] = str
+                            put(k, str)
                         elseif unsupported then
                             e.dead = true
                         end
@@ -1181,7 +1241,7 @@ local function emitProps(buf, inst, cls, opts, decompileCache)
 
     if cls == "Script" then
         local src = tostring(DATA.server_script_placeholder or "")
-        buf[#buf + 1] = '<ProtectedString name="Source">' .. clean(src) .. '</ProtectedString>'
+        put("Source", '<ProtectedString name="Source">' .. clean(src) .. '</ProtectedString>')
     elseif cls == "LocalScript" or cls == "ModuleScript" then
         local src = decompileCache and decompileCache[inst]
         if not src then src = readProp(inst, "Source") end
@@ -1210,7 +1270,7 @@ local function emitProps(buf, inst, cls, opts, decompileCache)
         if not src or src == "" then
             src = "-- [LX Serializer] No source recovered for " .. tostring(cls) .. " \"" .. tostring(readProp(inst, "Name")) .. "\""
         end
-        buf[#buf + 1] = '<ProtectedString name="Source">' .. clean(src) .. '</ProtectedString>'
+        put("Source", '<ProtectedString name="Source">' .. clean(src) .. '</ProtectedString>')
     end
 
     if GEOMETRY_CLASSES[cls] then
@@ -1228,10 +1288,19 @@ local function emitProps(buf, inst, cls, opts, decompileCache)
                 elseif raw ~= nil then
                     local str = serializeProp(bp, raw, gTypes and gTypes[bp])
                     if str then
-                        buf[#buf + 1] = str
+                        put(bp, str)
                         seen[bp] = true
                     end
                 end
+            end
+        end
+    end
+
+    if heldLegacy then
+        for k, str in pairs(heldLegacy) do
+            if not emitted[LEGACY_BINARY[k]] then
+                buf[#buf + 1] = str
+                if track then trackSize(SizeStats.props, k, #str) end
             end
         end
     end
@@ -1317,6 +1386,12 @@ emitInst = function(buf, inst, opts, decompileCache, refs, kidsOf, totalRefs)
     end
     buf[#buf + 1] = '</Properties>'
     openItems = openItems + 1
+
+    if opts.SizeReport then
+        local bytes = 0
+        for i = start + 1, #buf do bytes = bytes + #buf[i] end
+        trackSize(SizeStats.classes, cls, bytes)
+    end
 
     if kids then for i = 1, #kids do safeEmit(buf, kids[i], opts, decompileCache, refs, kidsOf, totalRefs) end end
 
@@ -1593,6 +1668,7 @@ function Fish.Save(instance, name, userOpts)
     tclear(decompiledByBytecode)
     openItems = 0
     resetShared()
+    resetSizeStats()
     _lastYield = clock()
     ensureOutFolder()
     log("Starting save (" .. tostring(opts.Mode) .. ")")
@@ -1739,6 +1815,8 @@ function Fish.Save(instance, name, userOpts)
         local ssb = sharedBlock()
         if ssb then buf[#buf + 1] = ssb end
         buf[#buf + 1] = '</roblox>'
+
+        if opts.SizeReport then pcall(logSizeReport, ssb and #ssb or 0) end
 
         local xml
         if sink then
