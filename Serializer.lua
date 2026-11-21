@@ -187,6 +187,7 @@ Fish.Options = {
     ShowStatus = true,
     ReadMe = true,
     SizeReport = true,
+    CompactSource = true,
     StreamToFile = true,
     StreamChunk = 4194304,
     LogToFile = true,
@@ -536,6 +537,34 @@ local function nm(x)
     return fmt("%.10g", x)
 end
 
+local spack, sunpack = string.pack, string.unpack
+local FLOAT_FORMATS = { "%.6g", "%.7g", "%.8g" }
+
+local function nf(x)
+    if type(x) ~= "number" or x ~= x or x == huge or x == -huge then return nm(x) end
+    if x == floor(x) and abs(x) < 1e15 then return fmt("%d", x) end
+    local ok, target = pcall(function() return (sunpack("<f", spack("<f", x))) end)
+    if not ok then return nm(x) end
+    for i = 1, #FLOAT_FORMATS do
+        local s = fmt(FLOAT_FORMATS[i], x)
+        local n = tonumber(s)
+        if n and sunpack("<f", spack("<f", n)) == target then return s end
+    end
+    return fmt("%.9g", target)
+end
+
+local function compactSource(src, opts)
+    if not opts.CompactSource or type(src) ~= "string" then return src end
+    if sfind(src, "%[=*%[") then return src end
+    local function retab(spaces)
+        local n = #spaces
+        return string.rep("\t", n // 4) .. string.rep(" ", n % 4)
+    end
+    local out = sgsub(src, "\n( +)", function(spaces) return "\n" .. retab(spaces) end)
+    out = sgsub(out, "^( +)", retab)
+    return out
+end
+
 local function isRealContent(name) return REAL_CONTENT_PROPS[name] == true end
 
 local URI_ACCESSORS = {"Source","Uri","Url","URL","Value","Text","String","AssetId","AssetID","Id","ID","Content","source","uri","url","value"}
@@ -615,7 +644,7 @@ local function serProtectedString(name, v) if type(v) ~= "string" then v = "" en
 local function serBool(name, v) if type(v) ~= "boolean" then v = v and true or false end return '<bool name="' .. clean(name) .. '">' .. (v and "true" or "false") .. '</bool>' end
 local function serInt(name, v) return '<int name="' .. clean(name) .. '">' .. fmt("%d", v) .. '</int>' end
 local function serInt64(name, v) return '<int64 name="' .. clean(name) .. '">' .. fmt("%d", v) .. '</int64>' end
-local function serFloat(name, v) return '<float name="' .. clean(name) .. '">' .. nm(v) .. '</float>' end
+local function serFloat(name, v) return '<float name="' .. clean(name) .. '">' .. nf(v) .. '</float>' end
 local function serDouble(name, v) return '<double name="' .. clean(name) .. '">' .. nm(v) .. '</double>' end
 local function serNumber(name, v)
     if v == floor(v) and v >= -2147483648 and v <= 2147483647 then return serInt(name, v) end
@@ -623,31 +652,31 @@ local function serNumber(name, v)
     return serDouble(name, v)
 end
 local serNumberAs = { float = serFloat, double = serDouble, int = serInt, int64 = serInt64 }
-local function serVector2(name, v) return '<Vector2 name="' .. clean(name) .. '"><X>' .. nm(v.X) .. '</X><Y>' .. nm(v.Y) .. '</Y></Vector2>' end
-local function serVector3(name, v) return '<Vector3 name="' .. clean(name) .. '"><X>' .. nm(v.X) .. '</X><Y>' .. nm(v.Y) .. '</Y><Z>' .. nm(v.Z) .. '</Z></Vector3>' end
+local function serVector2(name, v) return '<Vector2 name="' .. clean(name) .. '"><X>' .. nf(v.X) .. '</X><Y>' .. nf(v.Y) .. '</Y></Vector2>' end
+local function serVector3(name, v) return '<Vector3 name="' .. clean(name) .. '"><X>' .. nf(v.X) .. '</X><Y>' .. nf(v.Y) .. '</Y><Z>' .. nf(v.Z) .. '</Z></Vector3>' end
 local function serCFrame(name, v)
     local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = v:GetComponents()
-    return '<CoordinateFrame name="' .. clean(name) .. '"><X>' .. nm(x) .. '</X><Y>' .. nm(y) .. '</Y><Z>' .. nm(z)
-        .. '</Z><R00>' .. nm(r00) .. '</R00><R01>' .. nm(r01) .. '</R01><R02>' .. nm(r02)
-        .. '</R02><R10>' .. nm(r10) .. '</R10><R11>' .. nm(r11) .. '</R11><R12>' .. nm(r12)
-        .. '</R12><R20>' .. nm(r20) .. '</R20><R21>' .. nm(r21) .. '</R21><R22>' .. nm(r22)
+    return '<CoordinateFrame name="' .. clean(name) .. '"><X>' .. nf(x) .. '</X><Y>' .. nf(y) .. '</Y><Z>' .. nf(z)
+        .. '</Z><R00>' .. nf(r00) .. '</R00><R01>' .. nf(r01) .. '</R01><R02>' .. nf(r02)
+        .. '</R02><R10>' .. nf(r10) .. '</R10><R11>' .. nf(r11) .. '</R11><R12>' .. nf(r12)
+        .. '</R12><R20>' .. nf(r20) .. '</R20><R21>' .. nf(r21) .. '</R21><R22>' .. nf(r22)
         .. '</R22></CoordinateFrame>'
 end
-local function serColor3(name, v) return '<Color3 name="' .. clean(name) .. '"><R>' .. nm(v.R) .. '</R><G>' .. nm(v.G) .. '</G><B>' .. nm(v.B) .. '</B></Color3>' end
+local function serColor3(name, v) return '<Color3 name="' .. clean(name) .. '"><R>' .. nf(v.R) .. '</R><G>' .. nf(v.G) .. '</G><B>' .. nf(v.B) .. '</B></Color3>' end
 local function serBrickColor(name, v) return '<BrickColor name="' .. clean(name) .. '">' .. tostring(v.Number) .. '</BrickColor>' end
-local function serUDim(name, v) return '<UDim name="' .. clean(name) .. '"><S>' .. nm(v.Scale) .. '</S><O>' .. tostring(v.Offset) .. '</O></UDim>' end
-local function serUDim2(name, v) return '<UDim2 name="' .. clean(name) .. '"><XS>' .. nm(v.X.Scale) .. '</XS><XO>' .. tostring(v.X.Offset) .. '</XO><YS>' .. nm(v.Y.Scale) .. '</YS><YO>' .. tostring(v.Y.Offset) .. '</YO></UDim2>' end
-local function serRect(name, v) return '<Rect name="' .. clean(name) .. '"><min><X>' .. nm(v.Min.X) .. '</X><Y>' .. nm(v.Min.Y) .. '</Y></min><max><X>' .. nm(v.Max.X) .. '</X><Y>' .. nm(v.Max.Y) .. '</Y></max></Rect>' end
-local function serNumberRange(name, v) return '<NumberRange name="' .. clean(name) .. '"><Min>' .. nm(v.Min) .. '</Min><Max>' .. nm(v.Max) .. '</Max></NumberRange>' end
+local function serUDim(name, v) return '<UDim name="' .. clean(name) .. '"><S>' .. nf(v.Scale) .. '</S><O>' .. tostring(v.Offset) .. '</O></UDim>' end
+local function serUDim2(name, v) return '<UDim2 name="' .. clean(name) .. '"><XS>' .. nf(v.X.Scale) .. '</XS><XO>' .. tostring(v.X.Offset) .. '</XO><YS>' .. nf(v.Y.Scale) .. '</YS><YO>' .. tostring(v.Y.Offset) .. '</YO></UDim2>' end
+local function serRect(name, v) return '<Rect name="' .. clean(name) .. '"><min><X>' .. nf(v.Min.X) .. '</X><Y>' .. nf(v.Min.Y) .. '</Y></min><max><X>' .. nf(v.Max.X) .. '</X><Y>' .. nf(v.Max.Y) .. '</Y></max></Rect>' end
+local function serNumberRange(name, v) return '<NumberRange name="' .. clean(name) .. '"><Min>' .. nf(v.Min) .. '</Min><Max>' .. nf(v.Max) .. '</Max></NumberRange>' end
 local function serNumberSequence(name, v)
     local parts = { '<NumberSequence name="' .. clean(name) .. '">' }
-    for _, k in ipairs(v.Keypoints) do parts[#parts + 1] = '<Keypoint><Time>' .. nm(k.Time) .. '</Time><Value>' .. nm(k.Value) .. '</Value><Envelope>' .. nm(k.Envelope) .. '</Envelope></Keypoint>' end
+    for _, k in ipairs(v.Keypoints) do parts[#parts + 1] = '<Keypoint><Time>' .. nf(k.Time) .. '</Time><Value>' .. nf(k.Value) .. '</Value><Envelope>' .. nf(k.Envelope) .. '</Envelope></Keypoint>' end
     parts[#parts + 1] = '</NumberSequence>'
     return tconcat(parts)
 end
 local function serColorSequence(name, v)
     local parts = { '<ColorSequence name="' .. clean(name) .. '">' }
-    for _, k in ipairs(v.Keypoints) do parts[#parts + 1] = '<Keypoint><Time>' .. nm(k.Time) .. '</Time><Color><R>' .. nm(k.Value.R) .. '</R><G>' .. nm(k.Value.G) .. '</G><B>' .. nm(k.Value.B) .. '</B></Color></Keypoint>' end
+    for _, k in ipairs(v.Keypoints) do parts[#parts + 1] = '<Keypoint><Time>' .. nf(k.Time) .. '</Time><Color><R>' .. nf(k.Value.R) .. '</R><G>' .. nf(k.Value.G) .. '</G><B>' .. nf(k.Value.B) .. '</B></Color></Keypoint>' end
     parts[#parts + 1] = '</ColorSequence>'
     return tconcat(parts)
 end
@@ -683,7 +712,7 @@ local function serInstance(name, v)
     return nil
 end
 local function serPhysicalProps(name, v)
-    return '<PhysicalProperties name="' .. clean(name) .. '"><Density>' .. nm(v.Density) .. '</Density><Friction>' .. nm(v.Friction) .. '</Friction><Elasticity>' .. nm(v.Elasticity) .. '</Elasticity><FrictionWeight>' .. nm(v.FrictionWeight) .. '</FrictionWeight><ElasticityWeight>' .. nm(v.ElasticityWeight) .. '</ElasticityWeight></PhysicalProperties>'
+    return '<PhysicalProperties name="' .. clean(name) .. '"><Density>' .. nf(v.Density) .. '</Density><Friction>' .. nf(v.Friction) .. '</Friction><Elasticity>' .. nf(v.Elasticity) .. '</Elasticity><FrictionWeight>' .. nf(v.FrictionWeight) .. '</FrictionWeight><ElasticityWeight>' .. nf(v.ElasticityWeight) .. '</ElasticityWeight></PhysicalProperties>'
 end
 local function serBinaryString(name, v)
     if type(v) ~= "string" then return nil end
@@ -691,7 +720,7 @@ local function serBinaryString(name, v)
 end
 local function serRay(name, v)
     local o, d = v.Origin, v.Direction
-    return '<Ray name="' .. clean(name) .. '"><Origin><X>' .. nm(o.X) .. '</X><Y>' .. nm(o.Y) .. '</Y><Z>' .. nm(o.Z) .. '</Z></Origin><Direction><X>' .. nm(d.X) .. '</X><Y>' .. nm(d.Y) .. '</Y><Z>' .. nm(d.Z) .. '</Z></Direction></Ray>'
+    return '<Ray name="' .. clean(name) .. '"><Origin><X>' .. nf(o.X) .. '</X><Y>' .. nf(o.Y) .. '</Y><Z>' .. nf(o.Z) .. '</Z></Origin><Direction><X>' .. nf(d.X) .. '</X><Y>' .. nf(d.Y) .. '</Y><Z>' .. nf(d.Z) .. '</Z></Direction></Ray>'
 end
 local function serFont(name, v)
     local parts = {}
@@ -1270,7 +1299,7 @@ local function emitProps(buf, inst, cls, opts, decompileCache)
         if not src or src == "" then
             src = "-- [LX Serializer] No source recovered for " .. tostring(cls) .. " \"" .. tostring(readProp(inst, "Name")) .. "\""
         end
-        put("Source", '<ProtectedString name="Source">' .. clean(src) .. '</ProtectedString>')
+        put("Source", '<ProtectedString name="Source">' .. clean(compactSource(src, opts)) .. '</ProtectedString>')
     end
 
     if GEOMETRY_CLASSES[cls] then
